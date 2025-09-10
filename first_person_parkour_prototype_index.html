@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="ar">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>لعبة باركور منظور أول - نموذج تجريبي</title>
+  <style>
+    html,body{height:100%;margin:0;padding:0;direction:rtl;font-family: 'Segoe UI', Tahoma, Arial;}
+    #gameContainer{width:100%;height:100%;overflow:hidden;position:relative;background:#000}
+    /* واجهة تسجيل الدخول */
+    #loginOverlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);z-index:10}
+    #loginCard{width:360px;background:#111;color:#fff;padding:20px;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.7);text-align:right}
+    #loginCard h1{margin:0 0 10px;font-size:20px}
+    #loginCard label{display:block;margin-top:10px;font-size:14px}
+    #username{width:100%;padding:8px;margin-top:6px;border-radius:6px;border:1px solid #333;background:#0f0f0f;color:#fff}
+    #startBtn{width:100%;padding:10px;margin-top:16px;border-radius:8px;border:none;background:#1e90ff;color:#fff;font-weight:600;cursor:pointer}
+    #startBtn:active{transform:translateY(1px)}
+    /* HUD */
+    #hud{position:absolute;left:10px;top:10px;color:#fff;z-index:5;text-align:left;font-size:14px}
+    #message{position:absolute;left:50%;transform:translateX(-50%);bottom:20px;color:#fff;z-index:5;background:rgba(0,0,0,0.5);padding:8px 12px;border-radius:8px;font-size:15px}
+    /* زر المساعدة */
+    #help{position:absolute;right:10px;top:10px;color:#fff;z-index:5;background:rgba(0,0,0,0.4);padding:6px 10px;border-radius:6px;cursor:pointer}
+    a.small{color:#9cf;text-decoration:none;font-size:12px}
+    /* Arabic placeholders direction */
+    ::placeholder{direction:rtl}
+  </style>
+</head>
+<body>
+  <div id="gameContainer"></div>
+
+  <div id="loginOverlay">
+    <div id="loginCard">
+      <h1>أهلًا بك في لعبة الباركور (نموذج)</h1>
+      <p>ادخل اسمك ثم اضغط ابدأ — اللعبة بالعربية.</p>
+      <label for="username">الاسم</label>
+      <input id="username" placeholder="اكتب اسم اللاعب" />
+      <label for="language">اختيارات</label>
+      <select id="language" style="width:100%;padding:8px;border-radius:6px;background:#0f0f0f;color:#fff;margin-top:6px;border:1px solid #333">
+        <option value="ar">العربية</option>
+        <option value="en">English (for dev)</option>
+      </select>
+      <button id="startBtn">ابدأ اللعبة</button>
+      <p style="font-size:12px;margin-top:10px;color:#ccc">لتشغيل محليًا: استعمل خادم محلي (python -m http.server) إن ظهر تحذير أمان.</p>
+    </div>
+  </div>
+
+  <div id="hud" hidden>
+    <div id="playerName"></div>
+    <div id="instructions">تحكم: حرك الفأرة + انقر لربط المؤشر. W/A/S/D للمشي، مسافة للقفز (مسافة/space).</div>
+    <div id="score">الوقت: <span id="time">0.0</span>s</div>
+  </div>
+  <div id="help">مساعدة</div>
+  <div id="message" hidden></div>
+
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.150.1/build/three.module.js';
+    import { PointerLockControls } from 'https://unpkg.com/three@0.150.1/examples/jsm/controls/PointerLockControls.js';
+
+    // عناصر واجهة
+    const loginOverlay = document.getElementById('loginOverlay');
+    const startBtn = document.getElementById('startBtn');
+    const usernameInput = document.getElementById('username');
+    const hud = document.getElementById('hud');
+    const playerNameEl = document.getElementById('playerName');
+    const timeEl = document.getElementById('time');
+    const message = document.getElementById('message');
+    const helpBtn = document.getElementById('help');
+    const container = document.getElementById('gameContainer');
+
+    let scene, camera, renderer, controls;
+    let clock = new THREE.Clock();
+    let objects = []; // عوائق ومنصات
+    let velocity = new THREE.Vector3();
+    let canJump = false;
+    let playerName = 'لاعب';
+    let startTime = 0;
+    let running = false;
+
+    startBtn.addEventListener('click', ()=>{
+      const name = usernameInput.value.trim();
+      if(name.length>0) playerName = name;
+      loginOverlay.style.display='none';
+      hud.hidden = false;
+      playerNameEl.innerText = `اللاعب: ${playerName}`;
+      init();
+      animate();
+    });
+
+    helpBtn.addEventListener('click', ()=>{
+      showMessage('تحكم: انقر داخل الشاشة لربط الفأرة. WASD للحركة، مسافة للقفز. الهدف: الوصول للمنصة النهائية بأسرع وقت!');
+    });
+
+    function showMessage(txt, duration=4000){
+      message.hidden = false;
+      message.innerText = txt;
+      if(duration>0) setTimeout(()=>{message.hidden=true;}, duration);
+    }
+
+    function init(){
+      // المشهد والكاميرا
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x101020);
+
+      camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+      renderer = new THREE.WebGLRenderer({antialias:true});
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      container.appendChild(renderer.domElement);
+
+      // ضوء
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
+      hemi.position.set(0,50,0);
+      scene.add(hemi);
+
+      const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+      dir.position.set(-10,20,10);
+      scene.add(dir);
+
+      // أرضية افتراضية
+      const floorGeo = new THREE.PlaneGeometry(200,200);
+      const floorMat = new THREE.MeshStandardMaterial({color:0x222233,metalness:0.1,roughness:0.9});
+      const floor = new THREE.Mesh(floorGeo,floorMat);
+      floor.rotation.x = -Math.PI/2;
+      floor.position.y = -1.5;
+      scene.add(floor);
+
+      // إعداد التحكم
+      controls = new PointerLockControls(camera, renderer.domElement);
+
+      const blocker = document.getElementById('loginOverlay');
+      renderer.domElement.addEventListener('click', ()=>{
+        // عند النقر، نطلب قفل المؤشر
+        if(!running){
+          controls.lock();
+        }
+      });
+
+      controls.addEventListener('lock', ()=>{ running = true; startTime = performance.now(); showMessage('انطلق!')); });
+      controls.addEventListener('unlock', ()=>{ running = false; showMessage('توقف اللعب - المؤشر غير مربوط', 3000)); });
+
+      // منصات ومنعطفات - تبسيط
+      createPlatform(0,0,-5, 6,0.5,6, 0x3366aa); // بداية
+      createPlatform(0,0,-20, 3,0.5,3, 0x5599cc);
+      createPlatform(4,0,-36, 4,0.5,4, 0xaa6633);
+      createPlatform(-4,0,-52, 3,0.5,3, 0x55aa66);
+      // منصات متحركة بسيطة
+      createMovingPlatform(0,2,-70, 6,0.5,3, 0xcc3355);
+      // عقبات: قضبان دوارة
+      createSpinningObstacle(0,1.5,-90, 4);
+
+      // منصة النهاية
+      createPlatform(0,0,-110, 8,0.5,8, 0xffcc00, true);
+
+      // بعض الحواجز جانبية
+      for(let i=0;i<20;i++){
+        createWall(-20,0,-i*6 - 10,1.5,3,0x222233);
+        createWall(20,0,-i*6 - 10,1.5,3,0x222233);
+      }
+
+      // كاميرا بموقع البداية
+      controls.getObject().position.set(0,1.6,2);
+      scene.add(controls.getObject());
+
+      // أحداث النوافذ
+      window.addEventListener('resize', onWindowResize);
+
+      // تحكم الحركة
+      setupMovementControls();
+    }
+
+    function createPlatform(x,y,z, sx,sy,sz, color=0x888888, finish=false){
+      const geo = new THREE.BoxGeometry(sx,sy,sz);
+      const mat = new THREE.MeshStandardMaterial({color});
+      const mesh = new THREE.Mesh(geo,mat);
+      mesh.position.set(x,y,z);
+      scene.add(mesh);
+      objects.push({mesh, type:'platform', finish});
+    }
+
+    function createMovingPlatform(x,y,z, sx,sy,sz, color){
+      const geo = new THREE.BoxGeometry(sx,sy,sz);
+      const mat = new THREE.MeshStandardMaterial({color});
+      const mesh = new THREE.Mesh(geo,mat);
+      mesh.position.set(x,y,z);
+      mesh.userData = {baseZ:z, speed:0.8};
+      scene.add(mesh);
+      objects.push({mesh, type:'moving'});
+    }
+
+    function createSpinningObstacle(x,y,z, radius){
+      const group = new THREE.Group();
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,0.6,8), new THREE.MeshStandardMaterial({color:0x999999}));
+      hub.rotation.z = Math.PI/2;
+      group.add(hub);
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(radius,0.1,0.4), new THREE.MeshStandardMaterial({color:0x993333}));
+      blade.position.set(radius/2,0,0);
+      group.add(blade);
+      group.position.set(x,y,z);
+      scene.add(group);
+      objects.push({mesh:group, type:'spinning'});
+    }
+
+    function createWall(x,y,z, sx,sy, color){
+      const geo = new THREE.BoxGeometry(sx,sy,1);
+      const mat = new THREE.MeshStandardMaterial({color});
+      const mesh = new THREE.Mesh(geo,mat);
+      mesh.position.set(x,y,z);
+      scene.add(mesh);
+    }
+
+    function onWindowResize(){
+      camera.aspect = window.innerWidth/window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // تحكم الحركة الأساسية
+    const keys = {forward:false,back:false,left:false,right:false,jump:false};
+    function setupMovementControls(){
+      document.addEventListener('keydown', (e)=>{
+        if(e.code==='KeyW' || e.code==='ArrowUp') keys.forward=true;
+        if(e.code==='KeyS' || e.code==='ArrowDown') keys.back=true;
+        if(e.code==='KeyA' || e.code==='ArrowLeft') keys.left=true;
+        if(e.code==='KeyD' || e.code==='ArrowRight') keys.right=true;
+        if(e.code==='Space') keys.jump=true;
+      });
+      document.addEventListener('keyup', (e)=>{
+        if(e.code==='KeyW' || e.code==='ArrowUp') keys.forward=false;
+        if(e.code==='KeyS' || e.code==='ArrowDown') keys.back=false;
+        if(e.code==='KeyA' || e.code==='ArrowLeft') keys.left=false;
+        if(e.code==='KeyD' || e.code==='ArrowRight') keys.right=false;
+        if(e.code==='Space') keys.jump=false;
+      });
+    }
+
+    function animate(){
+      requestAnimationFrame(animate);
+      const delta = Math.min(0.05, clock.getDelta());
+
+      // تحديث منصات متحركة وعقبات
+      const t = clock.getElapsedTime();
+      objects.forEach(o=>{
+        if(o.type==='moving'){
+          o.mesh.position.z = o.mesh.userData.baseZ + Math.sin(t*o.mesh.userData.speed)*6;
+        }
+        if(o.type==='spinning'){
+          o.mesh.rotation.y += delta*2;
+        }
+      });
+
+      if(running){
+        // حركة اللاعب - قوة بسيطة
+        const speed = 5.0;
+        velocity.x -= velocity.x * 10.0 * delta;
+        velocity.z -= velocity.z * 10.0 * delta;
+        velocity.y -= 9.8 * delta; // gravity
+
+        if(keys.forward) velocity.z -= speed * delta * (controls.getObject().rotation.y ? 1 : 1);
+        if(keys.back) velocity.z += speed * delta;
+        if(keys.left) velocity.x -= speed * delta;
+        if(keys.right) velocity.x += speed * delta;
+
+        // قفز
+        if(keys.jump && canJump){
+          velocity.y = 5; canJump=false;
+        }
+
+        // تحديث موقع الكائن (الشخصية)
+        controls.getObject().translateX(velocity.x);
+        controls.getObject().translateY(velocity.y * delta);
+        controls.getObject().translateZ(velocity.z);
+
+        // كشف التصادم البسيط مع الأرض والمنصات
+        if(controls.getObject().position.y < 1.6){
+          velocity.y = 0; controls.getObject().position.y = 1.6; canJump=true;
+        }
+
+        // تصادم مع منصات
+        objects.forEach(o=>{
+          if(o.type==='platform' || o.type==='moving'){
+            const p = o.mesh.position;
+            const box = new THREE.Box3().setFromObject(o.mesh);
+            const playerPos = controls.getObject().position;
+            if(box.containsPoint(new THREE.Vector3(playerPos.x, playerPos.y-1.0, playerPos.z))){
+              // وضع اللاعب على المنصة
+              controls.getObject().position.y = box.max.y + 0.6;
+              velocity.y = 0; canJump=true;
+              if(o.finish){
+                const total = ((performance.now()-startTime)/1000).toFixed(2);
+                showMessage(`مبروك! وصلت للمنصة النهائية في ${total} ثانية`, 8000);
+                controls.unlock();
+              }
+            }
+          }
+          if(o.type==='spinning'){
+            // تصادم بسيط: حساب مسافة
+            const obstaclePos = new THREE.Vector3(); o.mesh.getWorldPosition(obstaclePos);
+            const d = obstaclePos.distanceTo(controls.getObject().position);
+            if(d < 1.2){
+              // ضرب بعقوبة بسيطة: ارجاع للمسافة السابقة
+              showMessage('أصبت! تم إرجاعك لآخر منصة', 2000);
+              controls.getObject().position.set(0,1.6, -20);
+              velocity.set(0,0,0);
+            }
+          }
+        });
+
+        // تحديث الزمن في HUD
+        const elapsed = ((performance.now()-startTime)/1000).toFixed(2);
+        timeEl.innerText = elapsed;
+      }
+
+      renderer.render(scene, camera);
+    }
+
+  </script>
+</body>
+</html>
